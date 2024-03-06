@@ -7,4 +7,13 @@ pub enum Error {
 
   #[error(transparent)]
   Utf8(#[from] std::string::FromUtf8Error),
+
+  #[error("invalid request method")]
+  InvalidMethod,
+
+  #[error("invalid request header")]
+  InvalidHeader,
+
+  #[error("invalid request line")]
+  InvalidRequestLine,
 }
