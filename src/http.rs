@@ -65,7 +65,7 @@ impl TryFrom<String> for RequestMethod {
 }
 
 #[derive(Debug)]
-pub enum ResponseCode {
+pub enum StatusCode {
   Ok,
   Created,
   NotFound,
@@ -73,7 +73,7 @@ pub enum ResponseCode {
   BadRequest,
 }
 
-impl ToString for ResponseCode {
+impl ToString for StatusCode {
   fn to_string(&self) -> String {
     match self {
       Self::Ok => "200 OK",
@@ -87,36 +87,37 @@ impl ToString for ResponseCode {
 }
 #[derive(Debug)]
 pub struct Response {
-  code: ResponseCode,
+  code: StatusCode,
   headers: Headers,
   body: Vec<u8>,
 }
 
 impl Response {
-  pub fn new(code: ResponseCode, headers: Headers, body: Vec<u8>) -> Self {
+  pub fn new(code: StatusCode, headers: Headers, body: Vec<u8>) -> Self {
     Self {
       code,
       headers,
       body,
     }
   }
-  pub fn from_plain_text(code: ResponseCode, body: &str) -> Self {
+  pub fn from_plain_text(code: StatusCode, body: &str) -> Self {
     Self {
       code,
       headers: Headers::from([
-        ("Content-Length".to_string(), body.len().to_string()),
-        (
-          "Content-Type".to_string(),
-          "text/html; charset=utf-8".to_string(),
-        ),
-      ]),
+        ("Content-Length".to_string(), body.len().to_string())]),
       body: body.bytes().collect(),
     }
   }
   pub fn from_html_ok(html: &str) -> Self {
     Self {
-      code: ResponseCode::Ok,
-      headers: Headers::from([("Content-Length".to_string(), html.len().to_string())]),
+      code: StatusCode::Ok,
+      headers: Headers::from([
+        ("Content-Length".to_string(), html.len().to_string()),
+        (
+          "Content-Type".to_string(),
+          "text/html; charset=utf-8".to_string(),
+        ),
+      ]),
       body: html.bytes().collect(),
     }
   }
