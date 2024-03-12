@@ -5,9 +5,6 @@ mod parse;
 mod prelude;
 mod tree;
 
-use std::convert::Infallible;
-use std::future::Future;
-
 use http::*;
 use parse::*;
 use tokio::io::AsyncWriteExt;
@@ -22,14 +19,8 @@ struct MyHandler {}
 impl Handler for MyHandler {
   async fn call(&mut self, request: Request) -> Result<Response, TempError> {
     let response = match (request.method(), request.url().as_str()) {
-      (&RequestMethod::Get, "/") => {
-        Response::builder()
-          .status(200)
-          .body("Hello")?
-      }
-      _ => Response::builder()
-        .status(404)
-        .body("not found")?,
+      (&RequestMethod::Get, "/") => Response::builder().status(200).body("Hello")?,
+      _ => Response::builder().status(404).body("not found")?,
     };
     Ok(response)
   }
