@@ -8,11 +8,8 @@ pub enum ParseHttpRequestError {
   #[error(transparent)]
   IO(#[from] tokio::io::Error),
 
-  #[error("bad header: {0}")]
-  BadHeader(String),
-
-  #[error("bad request line: {0}")]
-  BadRequestLine(String),
+  #[error(transparent)]
+  Http(#[from] HttpError)
 }
 
 type Result<T> = std::result::Result<T, ParseHttpRequestError>;
@@ -20,7 +17,7 @@ type Result<T> = std::result::Result<T, ParseHttpRequestError>;
 fn parse_header(text: &str) -> Result<(String, String)> {
   let (key, value) = text
     .split_once(':')
-    .ok_or(ParseHttpRequestError::BadHeader(text.into()))?;
+    .ok_or(HttpError::InvalidHeader(text.into()))?;
   let key = key.to_string();
   let value = value.trim_start().trim_end_matches("\r\n").to_string();
   Ok((key, value))
@@ -29,12 +26,12 @@ fn parse_request_line(text: &str) -> Result<(RequestMethod, String)> {
   let mut request_line_parts = text.splitn(3, ' ').into_iter().map(|s| s.to_string());
   let method: RequestMethod = request_line_parts
     .next()
-    .ok_or(ParseHttpRequestError::BadRequestLine(text.into()))?
+    .ok_or(HttpError::InvalidRequestLine(text.into()))?
     .try_into()
-    .map_err(|_| ParseHttpRequestError::BadRequestLine(text.into()))?;
+    .map_err(|_| HttpError::InvalidRequestLine(text.into()))?;
   let url = request_line_parts
     .next()
-    .ok_or(ParseHttpRequestError::BadRequestLine(text.into()))?;
+    .ok_or(HttpError::InvalidRequestLine(text.into()))?;
   Ok((method, url))
 }
 
@@ -56,7 +53,7 @@ pub async fn parse_request(stream: &mut net::TcpStream) -> Result<Request> {
   let body = if let Some(len) = headers.get("Content-Length") {
     let len = len
       .parse()
-      .map_err(|_| ParseHttpRequestError::BadHeader("Content-Length is not number".into()))?;
+      .map_err(|_| HttpError::InvalidHeaderValue("Content-Length".into(), len.to_string()))?;
     let mut body = [0u8; 1024];
     buf_reader.read(&mut body).await?;
     let slice = &body[..len];

@@ -13,11 +13,13 @@ use tokio::net;
 type TempError = Box<dyn std::error::Error>;
 
 trait Handler {
-  async fn call(&mut self, request: Request) -> Result<Response, TempError>;
+  type Error;
+  async fn call(&mut self, request: Request) -> Result<Response, Self::Error>;
 }
 struct MyHandler {}
 impl Handler for MyHandler {
-  async fn call(&mut self, request: Request) -> Result<Response, TempError> {
+  type Error = StatusCode;
+  async fn call(&mut self, request: Request) -> Result<Response, Self::Error> {
     let response = match (request.method(), request.url().as_str()) {
       (&RequestMethod::Get, "/") => Response::builder().status(200).body("Hello")?,
       _ => Response::builder().status(404).body("not found")?,
@@ -38,14 +40,16 @@ impl Server {
       .expect("couldn't bind TCP listener");
     loop {
       let Ok((mut stream, _)) = listener.accept().await else {
+        eprintln!("couldn't accept stream from the listener");
         continue;
       };
       let Ok(request) = parse_request(&mut stream).await else {
-        eprintln!("error");
+        eprintln!("error while parsing request");
         continue;
       };
       let response = handler.call(request).await.unwrap();
-      if let Err(_) = stream.write_all(&response.as_bytes()).await {
+      if let Err(e) = stream.write_all(&response.as_bytes()).await {
+        eprintln!("error while writing to stream: {e}");
         continue;
       }
     }

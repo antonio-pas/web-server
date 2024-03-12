@@ -90,3 +90,17 @@ impl ResponseBuilder {
     self.inner
   }
 }
+
+pub trait IntoResponse {
+  fn into_response(self) -> Response;
+}
+impl IntoResponse for Response {
+  fn into_response(self) -> Response {
+    self
+  }
+}
+impl IntoResponse for StatusCode {
+  fn into_response(self) -> Response {
+    Response::builder().status(self).body(()).unwrap()
+  }
+}

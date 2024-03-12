@@ -2,8 +2,14 @@
 
 #[derive(thiserror::Error, Debug)]
 pub enum HttpError {
-  #[error("invalid response code {0}")]
+  #[error("invalid response code: {0}")]
   InvalidResponseCode(u16),
+  #[error("invalid header: {0}")]
+  InvalidHeader(String),
+  #[error("invalid request line: {0}")]
+  InvalidRequestLine(String),
+  #[error("header of wrong type, {0} should not be {1}")]
+  InvalidHeaderValue(String, String)
 }
 
 mod common;
