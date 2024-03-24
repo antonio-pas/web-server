@@ -9,7 +9,7 @@ pub enum HttpError {
   #[error("invalid request line: {0}")]
   InvalidRequestLine(String),
   #[error("header of wrong type, {0} should not be {1}")]
-  InvalidHeaderValue(String, String)
+  InvalidHeaderValue(String, String),
 }
 
 mod common;
@@ -26,5 +26,6 @@ mod request;
 pub use request::Request;
 
 mod response;
+pub use response::IntoResponse;
 pub use response::Response;
 pub use response::ResponseBuilder;

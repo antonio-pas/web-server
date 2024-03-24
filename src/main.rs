@@ -5,24 +5,32 @@ mod parse;
 mod prelude;
 mod tree;
 
+use std::fmt::Pointer;
+use std::sync::Arc;
+
 use http::*;
 use parse::*;
 use tokio::io::AsyncWriteExt;
 use tokio::net;
-
-type TempError = Box<dyn std::error::Error>;
+use tokio::sync::Mutex;
 
 trait Handler {
-  type Error;
-  async fn call(&mut self, request: Request) -> Result<Response, Self::Error>;
+  type Response: IntoResponse + Send;
+  fn call(&mut self, request: Request) -> impl std::future::Future<Output = Self::Response> + Send;
+}
+type MyError = Box<dyn std::error::Error + Send + Sync + 'static>;
+impl IntoResponse for MyError {
+  fn into_response(self) -> Response {
+    format!("{self}").into_response()
+  }
 }
 struct MyHandler {}
 impl Handler for MyHandler {
-  type Error = StatusCode;
-  async fn call(&mut self, request: Request) -> Result<Response, Self::Error> {
+  type Response = Result<Response, MyError>;
+  async fn call(&mut self, request: Request) -> Self::Response {
     let response = match (request.method(), request.url().as_str()) {
-      (&RequestMethod::Get, "/") => Response::builder().status(200).body("Hello")?,
-      _ => Response::builder().status(404).body("not found")?,
+      (&RequestMethod::Get, "/") => Response::builder().status(200).body("Hello").unwrap(),
+      _ => Response::builder().status(404).body("not found").unwrap(),
     };
     Ok(response)
   }
@@ -34,10 +42,14 @@ impl Server {
   pub fn new(addr: &'static str) -> Self {
     Self { addr }
   }
-  pub async fn listen<H: Handler>(&self, mut handler: H) {
+  pub async fn listen<H: Handler>(&self, mut handler: H)
+  where
+    H: Handler + Send + 'static,
+  {
     let listener = net::TcpListener::bind(self.addr)
       .await
       .expect("couldn't bind TCP listener");
+    let handler = Arc::new(Mutex::new(handler));
     loop {
       let Ok((mut stream, _)) = listener.accept().await else {
         eprintln!("couldn't accept stream from the listener");
@@ -47,11 +59,14 @@ impl Server {
         eprintln!("error while parsing request");
         continue;
       };
-      let response = handler.call(request).await.unwrap();
-      if let Err(e) = stream.write_all(&response.as_bytes()).await {
-        eprintln!("error while writing to stream: {e}");
-        continue;
-      }
+      let handler = handler.clone();
+      tokio::task::spawn(async move {
+        let mut handler = handler.lock().await;
+        let response = handler.call(request).await.into_response();
+        if let Err(e) = stream.write_all(&response.as_bytes()).await {
+          eprintln!("error while writing to stream: {e}");
+        }
+      });
     }
   }
 }

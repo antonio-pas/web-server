@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::*;
 
 #[derive(Debug, Default)]
@@ -94,6 +96,21 @@ impl ResponseBuilder {
 pub trait IntoResponse {
   fn into_response(self) -> Response;
 }
+impl IntoResponse for &str {
+  fn into_response(self) -> Response {
+    Body::from(self).into_response()
+  }
+}
+impl IntoResponse for String {
+  fn into_response(self) -> Response {
+    Body::from(self).into_response()
+  }
+}
+impl IntoResponse for Body {
+  fn into_response(self) -> Response {
+    Response::new(StatusCode::Ok, Headers::new(), self)
+  }
+}
 impl IntoResponse for Response {
   fn into_response(self) -> Response {
     self
@@ -101,6 +118,21 @@ impl IntoResponse for Response {
 }
 impl IntoResponse for StatusCode {
   fn into_response(self) -> Response {
-    Response::builder().status(self).body(()).unwrap()
+    Response {
+      status_code: self,
+      ..Default::default()
+    }
+  }
+}
+impl<A, B> IntoResponse for Result<A, B>
+where
+  A: IntoResponse,
+  B: IntoResponse,
+{
+  fn into_response(self) -> Response {
+    match self {
+      Self::Ok(a) => a.into_response(),
+      Self::Err(b) => b.into_response(),
+    }
   }
 }

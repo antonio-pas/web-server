@@ -9,7 +9,7 @@ pub enum ParseHttpRequestError {
   IO(#[from] tokio::io::Error),
 
   #[error(transparent)]
-  Http(#[from] HttpError)
+  Http(#[from] HttpError),
 }
 
 type Result<T> = std::result::Result<T, ParseHttpRequestError>;
