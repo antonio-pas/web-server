@@ -8,7 +8,7 @@ pub enum StatusCode {
   NotFound,
   Unauthorized,
   BadRequest,
-  InternalServerError
+  InternalServerError,
 }
 
 impl ToString for StatusCode {
@@ -19,7 +19,7 @@ impl ToString for StatusCode {
       Self::NotFound => "404 Not Found",
       Self::Unauthorized => "403 Unauthorized",
       Self::BadRequest => "400 Bad Request",
-      Self::InternalServerError => "500 Internal Server Error"
+      Self::InternalServerError => "500 Internal Server Error",
     }
     .to_string()
   }

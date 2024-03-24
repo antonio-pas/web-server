@@ -5,16 +5,16 @@ mod parse;
 mod prelude;
 mod tree;
 
-use std::fmt::Pointer;
 use std::sync::Arc;
 
 use http::*;
 use parse::*;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net;
 use tokio::sync::Mutex;
+use tokio::fs;
 
-trait Handler {
+trait Handler<Request> {
   type Response: IntoResponse + Send;
   fn call(&mut self, request: Request) -> impl std::future::Future<Output = Self::Response> + Send;
 }
@@ -25,9 +25,17 @@ impl IntoResponse for MyError {
   }
 }
 struct MyHandler {}
-impl Handler for MyHandler {
+impl Handler<Request> for MyHandler {
   type Response = Result<Response, MyError>;
   async fn call(&mut self, request: Request) -> Self::Response {
+    if request.url().starts_with("/public/") {
+      let path = request.url().strip_prefix("/").unwrap();
+      let metadata = fs::metadata(path).await?;
+      let mut buffer = vec![0; metadata.len() as usize];
+      let mut file = fs::OpenOptions::new().read(true).open(path).await?;
+      file.read(&mut buffer).await?;
+      return Ok(Body::from(buffer).into_response());
+    }
     let response = match (request.method(), request.url().as_str()) {
       (&RequestMethod::Get, "/") => Response::builder().status(200).body("Hello").unwrap(),
       _ => Response::builder().status(404).body("not found").unwrap(),
@@ -42,9 +50,9 @@ impl Server {
   pub fn new(addr: &'static str) -> Self {
     Self { addr }
   }
-  pub async fn listen<H: Handler>(&self, mut handler: H)
+  pub async fn listen<H>(&self, handler: H)
   where
-    H: Handler + Send + 'static,
+    H: Handler<Request> + Send + 'static,
   {
     let listener = net::TcpListener::bind(self.addr)
       .await
