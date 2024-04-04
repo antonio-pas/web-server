@@ -22,24 +22,25 @@ fn parse_header(text: &str) -> Result<(String, String)> {
   let value = value.trim_start().trim_end_matches("\r\n").to_string();
   Ok((key, value))
 }
-fn parse_request_line(text: &str) -> Result<(RequestMethod, String)> {
+fn parse_request_line(text: &str) -> Result<(RequestMethod, Uri)> {
   let mut request_line_parts = text.splitn(3, ' ').into_iter().map(|s| s.to_string());
   let method: RequestMethod = request_line_parts
     .next()
     .ok_or(HttpError::InvalidRequestLine(text.into()))?
     .try_into()
     .map_err(|_| HttpError::InvalidRequestLine(text.into()))?;
-  let url = request_line_parts
+  let uri = request_line_parts
     .next()
     .ok_or(HttpError::InvalidRequestLine(text.into()))?;
-  Ok((method, url))
+  let uri = Uri::from_str(&uri);
+  Ok((method, uri))
 }
 
 pub async fn parse_request(stream: &mut net::TcpStream) -> Result<Request> {
   let mut buf_reader = BufReader::new(stream);
   let mut request_line = String::new();
   buf_reader.read_line(&mut request_line).await?;
-  let (method, url) = parse_request_line(&request_line)?;
+  let (method, uri) = parse_request_line(&request_line)?;
   let mut headers = Headers::new();
   loop {
     let mut line = String::new();
@@ -61,6 +62,6 @@ pub async fn parse_request(stream: &mut net::TcpStream) -> Result<Request> {
   } else {
     vec![]
   };
-  let request = Request::new(method, url, headers, body.into());
+  let request = Request::new(method, uri, headers, body.into());
   Ok(request)
 }

@@ -16,6 +16,9 @@ mod common;
 pub use common::Body;
 pub use common::Headers;
 
+mod uri;
+pub use uri::Uri;
+
 mod code;
 pub use code::StatusCode;
 

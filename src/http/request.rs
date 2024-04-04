@@ -3,16 +3,16 @@ use super::*;
 #[derive(Debug)]
 pub struct Request {
   method: RequestMethod,
-  url: String,
+  uri: Uri,
   headers: Headers,
   body: Body,
 }
 
 impl Request {
-  pub fn new(method: RequestMethod, url: String, headers: Headers, body: Body) -> Self {
+  pub fn new(method: RequestMethod, uri: Uri, headers: Headers, body: Body) -> Self {
     Self {
       method,
-      url,
+      uri,
       headers,
       body,
     }
@@ -22,8 +22,8 @@ impl Request {
     &self.method
   }
 
-  pub fn url(&self) -> &String {
-    &self.url
+  pub fn uri(&self) -> &Uri {
+    &self.uri
   }
 
   pub fn headers(&self) -> &Headers {
