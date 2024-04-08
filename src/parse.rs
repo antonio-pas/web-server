@@ -1,67 +1,124 @@
+use std::collections;
+
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net;
 
-use crate::http::*;
+use crate::error::*;
+use crate::http::{Headers, Request, RequestMethod, Uri};
 
-#[derive(Debug, thiserror::Error)]
-pub enum ParseHttpRequestError {
-  #[error(transparent)]
-  IO(#[from] tokio::io::Error),
-
-  #[error(transparent)]
-  Http(#[from] HttpError),
+pub struct Parser {
+  input: Vec<u8>,
+  pos: usize,
 }
 
-type Result<T> = std::result::Result<T, ParseHttpRequestError>;
-
-fn parse_header(text: &str) -> Result<(String, String)> {
-  let (key, value) = text
-    .split_once(':')
-    .ok_or(HttpError::InvalidHeader(text.into()))?;
-  let key = key.to_string();
-  let value = value.trim_start().trim_end_matches("\r\n").to_string();
-  Ok((key, value))
-}
-fn parse_request_line(text: &str) -> Result<(RequestMethod, Uri)> {
-  let mut request_line_parts = text.splitn(3, ' ').into_iter().map(|s| s.to_string());
-  let method: RequestMethod = request_line_parts
-    .next()
-    .ok_or(HttpError::InvalidRequestLine(text.into()))?
-    .try_into()
-    .map_err(|_| HttpError::InvalidRequestLine(text.into()))?;
-  let uri = request_line_parts
-    .next()
-    .ok_or(HttpError::InvalidRequestLine(text.into()))?;
-  let uri = Uri::from_str(&uri);
-  Ok((method, uri))
-}
-
-pub async fn parse_request(stream: &mut net::TcpStream) -> Result<Request> {
-  let mut buf_reader = BufReader::new(stream);
-  let mut request_line = String::new();
-  buf_reader.read_line(&mut request_line).await?;
-  let (method, uri) = parse_request_line(&request_line)?;
-  let mut headers = Headers::new();
-  loop {
-    let mut line = String::new();
-    buf_reader.read_line(&mut line).await?;
-    if line == "\r\n" {
-      break;
-    }
-    let header = parse_header(&line)?;
-    headers.insert(header.0, header.1);
+impl Parser {
+  pub fn new(input: Vec<u8>) -> Self {
+    Self { input, pos: 0 }
   }
-  let body = if let Some(len) = headers.get("Content-Length") {
-    let len = len
-      .parse()
-      .map_err(|_| HttpError::InvalidHeaderValue("Content-Length".into(), len.to_string()))?;
-    let mut body = [0u8; 1024];
-    buf_reader.read(&mut body).await?;
-    let slice = &body[..len];
-    slice.to_vec()
-  } else {
-    vec![]
-  };
-  let request = Request::new(method, uri, headers, body.into());
-  Ok(request)
+  pub fn consume(&mut self) -> u8 {
+    let byte = self.input[self.pos];
+    self.pos += 1;
+    byte
+  }
+  pub fn peek(&self) -> u8 {
+    self.input[self.pos]
+  }
+  pub fn eof(&self) -> bool {
+    self.pos >= self.input.len()
+  }
+  pub fn consume_while(&mut self, test: fn(u8) -> bool) -> Vec<u8> {
+    let mut vec = vec![];
+    while !self.eof() && test(self.peek()) {
+      vec.push(self.consume());
+    }
+    vec
+  }
+  pub fn starts_with(&mut self, seq: &[u8]) -> bool {
+    self.input[self.pos..].starts_with(seq)
+  }
+  pub fn parse(&mut self) -> Result<Request, Error> {
+    use Parse::*;
+    let method = self
+      .consume_while(|b| b.is_ascii_uppercase())
+      .iter()
+      .map(|b| *b as char)
+      .collect::<String>();
+    if self.consume() != b' ' {
+      return Err(Method.into());
+    }
+
+    let uri_path = self
+      .consume_while(|b| b != b'?' && b != b' ' && b.is_ascii_graphic())
+      .iter()
+      .map(|b| *b as char)
+      .collect::<String>();
+    if self.peek() == b'?' {
+      self.consume();
+    }
+    let uri_query = self
+      .consume_while(|b| b != b'#' && b != b' ' && b.is_ascii_graphic())
+      .iter()
+      .map(|b| *b as char)
+      .collect::<String>();
+    let _uri_fragment = self
+      .consume_while(|b| b != b' ' && b.is_ascii_graphic())
+      .iter()
+      .map(|b| *b as char)
+      .collect::<String>();
+
+    if self.consume() != b' ' {
+      return Err(Uri.into());
+    };
+
+    let version = self
+      .consume_while(|b| b.is_ascii_graphic() && b != b'\r')
+      .iter()
+      .map(|b| *b as char)
+      .collect::<String>();
+    if self.consume() != b'\r' {
+      return Err(Version.into());
+    }
+    if self.consume() != b'\n' {
+      return Err(Version.into());
+    }
+
+    let mut headers = Headers::new();
+    loop {
+      if self.starts_with(b"\r\n") {
+        break;
+      }
+
+      let name = self
+        .consume_while(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        .iter()
+        .map(|b| *b as char)
+        .collect::<String>();
+      if self.consume() != b':' {
+        return Err(Header.into());
+      }
+      if self.peek() == b' ' {
+        self.consume();
+      }
+      let value = self
+        .consume_while(|b| b.is_ascii_graphic() || b == b' ')
+        .iter()
+        .map(|b| *b as char)
+        .collect::<String>();
+      headers.insert(name, value);
+      if self.consume() != b'\r' {
+        return Err(Header.into());
+      }
+      if self.consume() != b'\n' {
+        return Err(Header.into());
+      }
+    }
+
+    let method = RequestMethod::try_from(method).map_err(|_| Method)?;
+    let uri = crate::Uri::from_parts(&uri_path, &uri_query);
+    let body = &self.input[self.pos..];
+
+    let request = Request::new(method, uri, headers, body.to_vec().into());
+
+    Ok(request)
+  }
 }

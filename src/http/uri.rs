@@ -4,6 +4,16 @@ pub struct Uri {
   query: Option<u16>,
 }
 impl Uri {
+  pub fn from_parts(path: &str, query: &str) -> Self {
+    let sep = if query.is_empty() { "" } else { "?" };
+    let string = format!("{path}{sep}{query}");
+    let query = if query.is_empty() {
+      None
+    } else {
+      Some(path.len() as u16)
+    };
+    Self { string, query }
+  }
   pub fn from_str(src: &str) -> Self {
     let mut fragment = None;
     let mut query = None;

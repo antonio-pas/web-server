@@ -5,15 +5,17 @@ mod parse;
 mod prelude;
 mod tree;
 
+use std::future::Future;
 use std::sync::Arc;
 
+use error::*;
 use http::*;
 use once_cell::sync::Lazy;
 use parse::*;
 use regex::Regex;
 use serde::Serialize;
-use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::fs::{self, File};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net;
 use tokio::sync::Mutex;
 static STORE: Lazy<Mutex<Vec<String>>> =
@@ -24,16 +26,39 @@ where
   H: Handler<Request>,
 {
   method: RequestMethod,
-  path_matcher: Regex,
+  regex: Regex,
   handler: H,
 }
+type Params = std::collections::HashMap<String, String>;
 impl<H: Handler<Request>> Route<H> {
   fn new(method: RequestMethod, path: &str, handler: H) -> Self {
+    let new_scheme = path
+      .split('/')
+      .map(|s| {
+        if let Some(s) = s.strip_prefix(":") {
+          format!("(?P<{s}>[^/]+)")
+        } else {
+          s.to_string()
+        }
+      })
+      .map(|s| s.replace("*", "[\\w]+"))
+      .collect::<Vec<_>>()
+      .join("/");
     Self {
       method,
-      path_matcher: Regex::new(&format!("^{}$", path)).unwrap(),
+      regex: Regex::new(&format!("^{}$", new_scheme)).unwrap(),
       handler,
     }
+  }
+  fn matches(&self, path: &str) -> Option<Params> {
+    let caps = self.regex.captures(path)?;
+    let map = self
+      .regex
+      .capture_names()
+      .flatten()
+      .filter_map(|name| Some((name.to_string(), caps.name(name)?.as_str().to_string())))
+      .collect::<Params>();
+    Some(map)
   }
 }
 #[derive(Debug)]
@@ -53,7 +78,7 @@ impl<H: Handler<Request>> Router<H> {
       .routes
       .iter_mut()
       .filter(|r| &r.method == method)
-      .find(|r| r.path_matcher.is_match(path))
+      .find(|r| r.matches(path).is_some())
       .map(|r| &mut r.handler)
   }
 }
@@ -83,28 +108,17 @@ impl<H: Handler<Request>> RouterBuilder<H> {
 }
 trait Handler<Request> {
   type Response: Send;
-  fn call(&mut self, request: Request) -> impl std::future::Future<Output = Self::Response> + Send;
+  fn call(&mut self, request: Request) -> impl Future<Output = Self::Response> + Send;
 }
-type MyError = Box<dyn std::error::Error + Send + Sync + 'static>;
-impl IntoResponse for MyError {
-  fn into_response(self) -> Response {
-    format!("{self}").into_response()
-  }
-}
-macro_rules! path {
-  ($method:ident $url:expr) => {
-    (&RequestMethod::$method, $url)
-  };
-}
-struct MyHandler {}
-impl<F, R> Handler<Request> for F
+impl<F, R, Response> Handler<Request> for F
 where
   F: Fn(Request) -> R + Send,
-  R: Send,
+  R: Future<Output = Response> + Send,
+  Response: Send,
 {
-  type Response = R;
+  type Response = Response;
   async fn call(&mut self, request: Request) -> Self::Response {
-    (self)(request)
+    (self)(request).await
   }
 }
 struct RouterHandler<H: Handler<Request>> {
@@ -127,64 +141,7 @@ impl<H: Handler<Request> + Send> Handler<Request> for RouterHandler<H> {
     }
   }
 }
-impl Handler<Request> for MyHandler {
-  type Response = Result<Response, MyError>;
-  async fn call(&mut self, request: Request) -> Self::Response {
-    if request.uri().path().starts_with("/public/") {
-      let path = request.uri().path().strip_prefix("/").unwrap();
-      let metadata = fs::metadata(path).await?;
-      let mut buffer = vec![0; metadata.len() as usize];
-      let mut file = fs::OpenOptions::new().read(true).open(path).await?;
-      file.read(&mut buffer).await?;
-      let mut content_type = "text/plain";
-      if (path.ends_with(".html")) {
-        content_type = "text/html";
-      } else if (path.ends_with(".js")) {
-        content_type = "text/javascript";
-      }
-      let response = Response::builder()
-        .status(200)
-        .header("Content-Type", content_type)
-        .body(buffer)?;
-      return Ok(response);
-    }
-    let response = match (request.method(), request.uri().path()) {
-      path!(Get "/") => {
-        let store = STORE.lock().await;
-        let mut items = String::new();
-        for item in store.iter() {
-          items.push_str(&format!("<li>{}</li>", item));
-        }
-        let html = tokio::fs::read_to_string("public/index.html")
-          .await
-          .unwrap();
-        Response::builder()
-          .status(200)
-          .header("Content-Type", "text/html")
-          .header("Content-Length", &html.len().to_string())
-          .body(html)?
-      }
-      path!(Get "/api/all") => {
-        let serialized = {
-          let store = STORE.lock().await;
-          serde_json::to_string(&store.to_vec())?
-        };
-        Response::builder().body(serialized)?
-      }
-      path!(Post "/api/add") => {
-        let string = String::from_utf8(request.body().get_bytes().to_vec())?;
-        let serialized: String = serde_json::from_str(&string)?;
-        {
-          let mut store = STORE.lock().await;
-          store.push(serialized);
-        }
-        Response::builder().status(201).body(())?
-      }
-      _ => Response::builder().status(404).body("not found")?,
-    };
-    Ok(response)
-  }
-}
+
 struct Server {
   addr: &'static str,
 }
@@ -192,7 +149,7 @@ impl Server {
   pub fn new(addr: &'static str) -> Self {
     Self { addr }
   }
-  pub async fn listen<H>(&self, handler: H)
+  pub async fn listen<H>(&self, handler: H) -> Result<(), Error>
   where
     H: Handler<Request> + Send + 'static,
     H::Response: IntoResponse,
@@ -206,7 +163,17 @@ impl Server {
         eprintln!("couldn't accept stream from the listener");
         continue;
       };
-      let Ok(request) = parse_request(&mut stream).await else {
+      let mut reader = BufReader::new(&mut stream);
+      let mut buf = [0u8; 2048];
+      let Ok(n) = reader.read(&mut buf).await else {
+        eprintln!("error reading");
+        continue;
+      };
+      let input = buf[0..n].to_vec();
+      let mut parser = Parser::new(input);
+
+      let Ok(request) = parser.parse() else {
+        eprintln!("parsing error");
         continue;
       };
       let handler = handler.clone();
@@ -220,17 +187,32 @@ impl Server {
     }
   }
 }
-fn not_found(_: Request) -> Response {
+fn server_error() -> Response {
+  Response::builder()
+    .status(500)
+    .body("500 Internal Server Error")
+    .unwrap()
+}
+async fn not_found(_: Request) -> Response {
   Response::builder().status(404).body("Not found").unwrap()
 }
-fn this_handler(req: Request) -> Response {
+async fn this_handler(req: Request) -> Response {
   Response::builder().body("helo").unwrap()
 }
+async fn public_handler(req: Request) -> Response {
+  let path = req.uri().path().strip_prefix("/public/").unwrap();
+  Response::builder().body("this is public").unwrap()
+}
+type Function<R> where R: Future<Output = Request> = fn(Request) -> R;
 #[tokio::main]
 async fn main() {
-  let router = Router::builder(not_found as fn(Request) -> Response)
+  let router = Router::builder(not_found as fn(Request) -> impl Future<Output = Response>)
     .get("/", this_handler)
+    .get("/public/*", public_handler)
     .build();
   let my_handler = RouterHandler::new(router);
-  Server::new("127.0.0.1:8000").listen(my_handler).await;
+  Server::new("127.0.0.1:8000")
+    .listen(my_handler)
+    .await
+    .expect("error");
 }
