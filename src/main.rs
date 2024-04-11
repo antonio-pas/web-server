@@ -6,8 +6,10 @@ mod prelude;
 mod tree;
 
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use error::*;
 use http::*;
 use once_cell::sync::Lazy;
@@ -20,18 +22,14 @@ use tokio::net;
 use tokio::sync::Mutex;
 static STORE: Lazy<Mutex<Vec<String>>> =
   Lazy::new(|| Mutex::new(vec![String::from("wash the dishes")]));
-#[derive(Debug)]
-struct Route<H>
-where
-  H: Handler<Request>,
-{
+struct Route {
   method: RequestMethod,
   regex: Regex,
-  handler: H,
+  handler: Box<dyn Handler<Request, Response = Response> + Send>,
 }
 type Params = std::collections::HashMap<String, String>;
-impl<H: Handler<Request>> Route<H> {
-  fn new(method: RequestMethod, path: &str, handler: H) -> Self {
+impl Route {
+  fn new<H: Handler<Request, Response = Response> + Send + 'static>(method: RequestMethod, path: &str, handler: H) -> Self {
     let new_scheme = path
       .split('/')
       .map(|s| {
@@ -47,7 +45,7 @@ impl<H: Handler<Request>> Route<H> {
     Self {
       method,
       regex: Regex::new(&format!("^{}$", new_scheme)).unwrap(),
-      handler,
+      handler: Box::new(handler),
     }
   }
   fn matches(&self, path: &str) -> Option<Params> {
@@ -61,58 +59,58 @@ impl<H: Handler<Request>> Route<H> {
     Some(map)
   }
 }
-#[derive(Debug)]
-struct Router<H: Handler<Request>> {
-  routes: Vec<Route<H>>,
-  not_found: H,
+struct Router {
+  routes: Vec<Route>,
+  not_found: Box<dyn Handler<Request, Response = Response> + Send>
 }
-impl<H: Handler<Request>> Router<H> {
-  fn new(routes: Vec<Route<H>>, not_found: H) -> Self {
-    Self { routes, not_found }
+impl Router {
+  fn new<H: Handler<Request, Response = Response> + Send + 'static>(routes: Vec<Route>, not_found: H) -> Self {
+    Self { routes, not_found: Box::new(not_found) }
   }
-  fn builder(not_found: H) -> RouterBuilder<H> {
+  fn builder<H: Handler<Request, Response = Response> + Send + 'static>(not_found: H) -> RouterBuilder {
     RouterBuilder::new(not_found)
   }
-  fn get_handler(&mut self, method: &RequestMethod, path: &str) -> Option<&mut H> {
+  fn get_handler(&mut self, method: &RequestMethod, path: &str) -> Option<&mut (dyn Handler<Request, Response = Response> + Send + 'static)> {
     self
       .routes
       .iter_mut()
       .filter(|r| &r.method == method)
       .find(|r| r.matches(path).is_some())
-      .map(|r| &mut r.handler)
+      .map(move |r| &mut *r.handler)
   }
 }
-#[derive(Debug)]
-struct RouterBuilder<H: Handler<Request>> {
-  routes: Vec<Route<H>>,
-  not_found: H,
+struct RouterBuilder {
+  routes: Vec<Route>,
+  not_found: Box<dyn Handler<Request, Response = Response> + Send>,
 }
-impl<H: Handler<Request>> RouterBuilder<H> {
-  fn new(not_found: H) -> Self {
+impl RouterBuilder {
+  fn new<H: Handler<Request, Response = Response> + Send + 'static>(not_found: H) -> Self {
     Self {
       routes: vec![],
-      not_found,
+      not_found: Box::new(not_found),
     }
   }
-  fn get(mut self, path: &str, handler: H) -> Self {
+  fn get<H: Handler<Request, Response = Response> + Send + 'static>(mut self, path: &str, handler: H) -> Self {
     let route = Route::new(RequestMethod::Get, path, handler);
     self.routes.push(route);
     self
   }
-  fn build(mut self) -> Router<H> {
+  fn build(mut self) -> Router {
     Router {
       routes: self.routes,
       not_found: self.not_found,
     }
   }
 }
-trait Handler<Request> {
+#[async_trait]
+trait Handler<Request: Send> {
   type Response: Send;
-  fn call(&mut self, request: Request) -> impl Future<Output = Self::Response> + Send;
+  async fn call(&mut self, request: Request) -> Self::Response;
 }
+#[async_trait]
 impl<F, R, Response> Handler<Request> for F
 where
-  F: Fn(Request) -> R + Send,
+  F: FnMut(Request) -> R + Send,
   R: Future<Output = Response> + Send,
   Response: Send,
 {
@@ -121,16 +119,17 @@ where
     (self)(request).await
   }
 }
-struct RouterHandler<H: Handler<Request>> {
-  router: Router<H>,
+struct RouterHandler {
+  router: Router,
 }
-impl<H: Handler<Request>> RouterHandler<H> {
-  fn new(router: Router<H>) -> Self {
+impl RouterHandler {
+  fn new(router: Router) -> Self {
     Self { router }
   }
 }
-impl<H: Handler<Request> + Send> Handler<Request> for RouterHandler<H> {
-  type Response = <H as Handler<Request>>::Response;
+#[async_trait]
+impl Handler<Request> for RouterHandler where Request: Send {
+  type Response = Response;
   async fn call(&mut self, request: Request) -> Self::Response {
     match self
       .router
@@ -203,12 +202,10 @@ async fn public_handler(req: Request) -> Response {
   let path = req.uri().path().strip_prefix("/public/").unwrap();
   Response::builder().body("this is public").unwrap()
 }
-type Function<R> where R: Future<Output = Request> = fn(Request) -> R;
 #[tokio::main]
 async fn main() {
-  let router = Router::builder(not_found as fn(Request) -> impl Future<Output = Response>)
+  let router = Router::builder(not_found)
     .get("/", this_handler)
-    .get("/public/*", public_handler)
     .build();
   let my_handler = RouterHandler::new(router);
   Server::new("127.0.0.1:8000")
