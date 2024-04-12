@@ -70,9 +70,18 @@ impl fmt::Display for Error {
 impl IntoResponse for Error {
   fn into_response(self) -> crate::http::Response {
     match self.kind {
-      Kind::Parse(_) => Response::builder().status(400).body("Sorry! Bad request.").unwrap(),
-      Kind::UnsupportedVersion => Response::builder().status(505).body("HTTP version not supported.").unwrap(),
-      Kind::Io => Response::builder().status(500).body("Sorry! Internal server error.").unwrap()
+      Kind::Parse(_) => Response::builder()
+        .status(400)
+        .body("Sorry! Bad request.")
+        .unwrap(),
+      Kind::UnsupportedVersion => Response::builder()
+        .status(505)
+        .body("HTTP version not supported.")
+        .unwrap(),
+      Kind::Io => Response::builder()
+        .status(500)
+        .body("Sorry! Internal server error.")
+        .unwrap(),
     }
   }
 }
